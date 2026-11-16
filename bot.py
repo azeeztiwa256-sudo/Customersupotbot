@@ -1,30 +1,21 @@
 """
 Telegram Customer Support Bot — Complete Application
-====================================================
-Run:  python bot.py
-Requires:  requirements.txt + .env (copy .env.example)
-
-Sections:
-  1. Settings & Logging
-  2. Database models + engine + seed
-  3. Repositories (users, FAQ, tickets, conversations)
-  4. DeepSeek AI client + knowledge base + conversation
-  5. Keyboards + FSM states + middlewares
-  6. User handlers (start, faq, ai, complaint, support, feedback, about)
-  7. Admin handlers (stats, FAQ mgmt, tickets, broadcast)
-  8. Web dashboard (FastAPI, optional)
-  9. Bootstrap (aiogram dispatcher + web + polling)
+=====================================================
+Run locally:   python bot.py
+Deploy to Railway: push to GitHub + connect repo in Railway.
+Set environment variables in Railway's Variables tab (see .env.example).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
 from functools import lru_cache
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import httpx
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
@@ -44,10 +35,14 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+
 # ═══════════════════════════════════════════════════════════════════════
-# 1. SETTINGS & LOGGING
+# 1. SETTINGS
 # ═══════════════════════════════════════════════════════════════════════
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+)
 log = logging.getLogger("supportbot")
 
 
@@ -89,6 +84,7 @@ def get_settings() -> Settings:
 
 settings = get_settings()
 
+
 # ═══════════════════════════════════════════════════════════════════════
 # 2. DATABASE MODELS
 # ═══════════════════════════════════════════════════════════════════════
@@ -116,9 +112,15 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_active: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    conversations: Mapped[list["Conversation"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    tickets: Mapped[list["Ticket"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    feedbacks: Mapped[list["Feedback"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    conversations: Mapped[list["Conversation"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    tickets: Mapped[list["Ticket"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    feedbacks: Mapped[list["Feedback"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class Conversation(Base):
@@ -129,7 +131,9 @@ class Conversation(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     user: Mapped["User"] = relationship(back_populates="conversations")
-    messages: Mapped[list["Message"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
+    messages: Mapped[list["Message_"]] = relationship(
+        back_populates="conversation", cascade="all, delete-orphan"
+    )
 
 
 class Message_(Base):
@@ -175,11 +179,15 @@ class Ticket(Base):
     type: Mapped[str] = mapped_column(String(32), default="complaint")
     subject: Mapped[str] = mapped_column(String(256))
     description: Mapped[str] = mapped_column(Text)
-    status: Mapped[TicketStatus] = mapped_column(SAEnum(TicketStatus), default=TicketStatus.OPEN, index=True)
+    status: Mapped[TicketStatus] = mapped_column(
+        SAEnum(TicketStatus), default=TicketStatus.OPEN, index=True
+    )
     priority: Mapped[str] = mapped_column(String(16), default="normal")
     assigned_agent_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     user: Mapped["User"] = relationship(back_populates="tickets")
@@ -193,6 +201,7 @@ class Feedback(Base):
     rating: Mapped[int] = mapped_column(Integer)
     comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
     user: Mapped["User"] = relationship(back_populates="feedbacks")
 
 
@@ -200,7 +209,9 @@ class BusinessSetting(Base):
     __tablename__ = "business_settings"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class BroadcastRecord(Base):
@@ -221,6 +232,9 @@ class UnansweredQuestion(Base):
     is_resolved: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 3. DATABASE ENGINE + SEED
+# ═══════════════════════════════════════════════════════════════════════
 engine = create_async_engine(settings.database_url, echo=False, future=True)
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -231,18 +245,20 @@ async def init_db() -> None:
     async with SessionLocal() as s:
         await _seed_defaults(s)
         await s.commit()
+    log.info("Database initialized.")
 
 
 async def _seed_defaults(s: AsyncSession) -> None:
     if ((await s.execute(select(func.count()).select_from(FAQ))).scalar() or 0) == 0:
         s.add_all([
             FAQ(category="General", question="What are your business hours?",
-                answer=f"Our hours are: {settings.business_hours}.", keywords="hours,open,close", display_order=1),
+                answer=f"Our hours are: {settings.business_hours}.",
+                keywords="hours,open,close", display_order=1),
             FAQ(category="Support", question="How do I reach a human agent?",
                 answer=f"Tap 'Talk to Support' in the menu, or contact {settings.support_contact}.",
                 keywords="human,agent,contact,help", display_order=2),
             FAQ(category="Payments", question="What payment methods do you accept?",
-                answer="Major cards and other methods — please ask support for details.",
+                answer="Major cards and other methods. Please ask support for details.",
                 keywords="payment,pay,card", display_order=3),
         ])
     if ((await s.execute(select(func.count()).select_from(BusinessSetting))).scalar() or 0) == 0:
@@ -256,9 +272,12 @@ async def _seed_defaults(s: AsyncSession) -> None:
         }.items():
             s.add(BusinessSetting(key=k, value=v))
     if ((await s.execute(select(func.count()).select_from(Product))).scalar() or 0) == 0:
-        s.add(Product(name="Sample Product",
-                      description="Placeholder product — edit via admin.",
-                      price="Contact us", availability="Available"))
+        s.add(Product(
+            name="Sample Product",
+            description="Placeholder product — edit via admin commands.",
+            price="Contact us",
+            availability="Available",
+        ))
 
 
 @asynccontextmanager
@@ -273,14 +292,18 @@ async def session_scope():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3. REPOSITORIES
+# 4. REPOSITORIES
 # ═══════════════════════════════════════════════════════════════════════
 async def upsert_user(s: AsyncSession, tg_user) -> User:
     u = await s.get(User, tg_user.id)
     if u is None:
-        u = User(id=tg_user.id, username=tg_user.username,
-                 first_name=tg_user.first_name or "",
-                 last_name=tg_user.last_name, language_code=tg_user.language_code)
+        u = User(
+            id=tg_user.id,
+            username=tg_user.username,
+            first_name=tg_user.first_name or "",
+            last_name=tg_user.last_name,
+            language_code=tg_user.language_code,
+        )
         s.add(u)
     else:
         u.username = tg_user.username
@@ -312,11 +335,17 @@ async def get_faq_categories(s: AsyncSession) -> list[str]:
     )).scalars())
 
 
-async def create_ticket(s: AsyncSession, user_id: int, subject: str, description: str,
-                        ticket_type: str = "complaint") -> Ticket:
-    t = Ticket(user_id=user_id,
-               ticket_number=f"T{datetime.utcnow():%y%m%d}-{secrets.token_hex(3).upper()}",
-               type=ticket_type, subject=subject[:250], description=description)
+async def create_ticket(
+    s: AsyncSession, user_id: int, subject: str, description: str,
+    ticket_type: str = "complaint",
+) -> Ticket:
+    t = Ticket(
+        user_id=user_id,
+        ticket_number=f"T{datetime.utcnow():%y%m%d}-{secrets.token_hex(3).upper()}",
+        type=ticket_type,
+        subject=subject[:250],
+        description=description,
+    )
     s.add(t)
     await s.flush()
     return t
@@ -340,13 +369,14 @@ async def add_msg(s: AsyncSession, conv_id: int, role: str, content: str) -> Non
 
 async def recent_history(s: AsyncSession, conv_id: int, limit: int = 10) -> list[Message_]:
     rows = list((await s.execute(
-        select(Message_).where(Message_.conversation_id == conv_id).order_by(Message_.id.desc()).limit(limit)
+        select(Message_).where(Message_.conversation_id == conv_id)
+        .order_by(Message_.id.desc()).limit(limit)
     )).scalars())
     return list(reversed(rows))
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 4. DEEPSEEK AI
+# 5. DEEPSEEK AI
 # ═══════════════════════════════════════════════════════════════════════
 class DeepSeekError(Exception):
     pass
@@ -355,9 +385,16 @@ class DeepSeekError(Exception):
 async def deepseek_chat(messages: list[dict]) -> str:
     if not settings.ai_enabled or not settings.deepseek_api_key:
         raise DeepSeekError("AI disabled or not configured")
-    headers = {"Authorization": f"Bearer {settings.deepseek_api_key}", "Content-Type": "application/json"}
-    payload = {"model": settings.deepseek_model, "messages": messages,
-               "temperature": 0.4, "max_tokens": 500}
+    headers = {
+        "Authorization": f"Bearer {settings.deepseek_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": settings.deepseek_model,
+        "messages": messages,
+        "temperature": 0.4,
+        "max_tokens": 500,
+    }
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(settings.ai_timeout_seconds)) as c:
             r = await c.post(settings.deepseek_api_url, json=payload, headers=headers)
@@ -370,15 +407,19 @@ async def deepseek_chat(messages: list[dict]) -> str:
 async def build_knowledge_context(s: AsyncSession) -> str:
     biz = {r.key: r.value for r in (await s.execute(select(BusinessSetting))).scalars()}
     faqs = (await get_active_faqs(s))[:25]
-    products = list((await s.execute(select(Product).where(Product.is_active.is_(True)).limit(20))).scalars())
-    parts = ["=== BUSINESS INFO ==="] + [f"{k.replace('_',' ').title()}: {v}" for k, v in biz.items()]
+    products = list((await s.execute(
+        select(Product).where(Product.is_active.is_(True)).limit(20)
+    )).scalars())
+    parts = ["=== BUSINESS INFO ==="] + [f"{k.replace('_', ' ').title()}: {v}" for k, v in biz.items()]
     if faqs:
         parts.append("\n=== FAQs ===")
         parts += [f"Q: {f.question}\nA: {f.answer}" for f in faqs]
     if products:
         parts.append("\n=== PRODUCTS ===")
-        parts += [f"- {p.name}: {p.description} | {p.price or 'N/A'} | {p.availability or 'N/A'}"
-                  for p in products]
+        parts += [
+            f"- {p.name}: {p.description} | {p.price or 'N/A'} | {p.availability or 'N/A'}"
+            for p in products
+        ]
     return "\n".join(parts)
 
 
@@ -402,22 +443,30 @@ async def generate_reply(s: AsyncSession, user_id: int, user_message: str) -> st
     await add_msg(s, conv.id, "user", user_message)
     history = await recent_history(s, conv.id, limit=10)
     knowledge = await build_knowledge_context(s)
-    biz = (await s.get(BusinessSetting, "business_name"))
-    sys_prompt = SYSTEM_PROMPT.format(business=biz.value if biz else "our business", knowledge=knowledge)
+    biz = await s.get(BusinessSetting, "business_name")
+    sys_prompt = SYSTEM_PROMPT.format(
+        business=biz.value if biz else "our business", knowledge=knowledge
+    )
     messages = [{"role": "system", "content": sys_prompt}]
-    messages += [{"role": m.role, "content": m.content} for m in history if m.role in ("user", "assistant")]
+    messages += [
+        {"role": m.role, "content": m.content}
+        for m in history
+        if m.role in ("user", "assistant")
+    ]
     try:
         reply = await deepseek_chat(messages)
     except DeepSeekError:
-        reply = ("I'm having trouble answering right now. "
-                 "Try ❓ FAQ or tap 👨‍💻 Talk to Support and a human will help shortly.")
+        reply = (
+            "I'm having trouble answering right now. "
+            "Try ❓ FAQ or tap 👨‍💻 Talk to Support and a human will help shortly."
+        )
         s.add(UnansweredQuestion(user_id=user_id, question=user_message))
     await add_msg(s, conv.id, "assistant", reply)
     return reply
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 5. KEYBOARDS, STATES, MIDDLEWARES
+# 6. KEYBOARDS + STATES + MIDDLEWARES
 # ═══════════════════════════════════════════════════════════════════════
 def main_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
@@ -501,7 +550,6 @@ class ThrottleMiddleware(BaseMiddleware):
         uid = event.from_user.id if event.from_user else 0
         if uid in settings.admin_id_list:
             return await handler(event, data)
-        import time
         now = time.monotonic()
         if now - self._cd.get(uid, 0) < settings.rate_limit_seconds:
             await event.answer("⏳ Please wait a moment.")
@@ -528,7 +576,7 @@ def is_admin(uid: int) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 6. USER HANDLERS
+# 7. USER HANDLERS
 # ═══════════════════════════════════════════════════════════════════════
 user_router = Router(name="user")
 
@@ -599,7 +647,8 @@ async def cb_faq_show(cq: CallbackQuery, session: AsyncSession):
         return
     await cq.message.edit_text(
         f"❓ *{faq.question}*\n\n{faq.answer}",
-        reply_markup=back_home(), parse_mode="Markdown"
+        reply_markup=back_home(),
+        parse_mode="Markdown",
     )
     await cq.answer()
 
@@ -608,7 +657,7 @@ async def cb_faq_show(cq: CallbackQuery, session: AsyncSession):
 async def cb_ask(cq: CallbackQuery):
     await cq.message.edit_text(
         "💬 Just type your question and I'll answer using our AI assistant.",
-        reply_markup=back_home()
+        reply_markup=back_home(),
     )
     await cq.answer()
 
@@ -632,8 +681,11 @@ async def cb_products(cq: CallbackQuery, session: AsyncSession):
 @user_router.callback_query(F.data == "menu:complaint")
 async def cb_complaint(cq: CallbackQuery, state: FSMContext):
     await state.set_state(ComplaintFSM.subject)
-    await cq.message.edit_text("⚠️ Please type a *short subject* for your complaint:",
-                               reply_markup=cancel_kb(), parse_mode="Markdown")
+    await cq.message.edit_text(
+        "⚠️ Please type a *short subject* for your complaint:",
+        reply_markup=cancel_kb(),
+        parse_mode="Markdown",
+    )
     await cq.answer()
 
 
@@ -653,7 +705,8 @@ async def complaint_desc(m: Message, state: FSMContext, session: AsyncSession, b
     await m.answer(
         f"✅ Complaint received.\n\n🎫 Ticket: *{ticket.ticket_number}*\n\n"
         f"Our team will review and follow up.",
-        reply_markup=back_home(), parse_mode="Markdown"
+        reply_markup=back_home(),
+        parse_mode="Markdown",
     )
     for admin_id in settings.admin_id_list:
         try:
@@ -662,7 +715,7 @@ async def complaint_desc(m: Message, state: FSMContext, session: AsyncSession, b
                 f"🚨 *New Complaint* `{ticket.ticket_number}`\n"
                 f"From: {m.from_user.full_name} (`{m.from_user.id}`)\n"
                 f"Subject: {data['subject']}\n\n{m.text}",
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
         except Exception as e:
             log.warning("Admin notify failed: %s", e)
@@ -673,7 +726,7 @@ async def cb_support(cq: CallbackQuery, state: FSMContext):
     await state.set_state(SupportFSM.message)
     await cq.message.edit_text(
         "👨‍💻 Type your message — it will be sent to a human agent.",
-        reply_markup=cancel_kb()
+        reply_markup=cancel_kb(),
     )
     await cq.answer()
 
@@ -685,7 +738,8 @@ async def support_msg(m: Message, state: FSMContext, session: AsyncSession, bot:
     ticket = await create_ticket(session, user.id, "Support request", m.text, "support")
     await m.answer(
         f"✅ Sent. Ticket: *{ticket.ticket_number}*",
-        reply_markup=back_home(), parse_mode="Markdown"
+        reply_markup=back_home(),
+        parse_mode="Markdown",
     )
     for admin_id in settings.admin_id_list:
         try:
@@ -693,7 +747,8 @@ async def support_msg(m: Message, state: FSMContext, session: AsyncSession, bot:
                 admin_id,
                 f"👨‍💻 *Support Ticket* `{ticket.ticket_number}`\n"
                 f"From: {m.from_user.full_name} (`{m.from_user.id}`)\n\n{m.text}",
-                parse_mode="Markdown", reply_markup=ticket_admin_kb(ticket.id)
+                parse_mode="Markdown",
+                reply_markup=ticket_admin_kb(ticket.id),
             )
         except Exception as e:
             log.warning("Admin notify failed: %s", e)
@@ -714,7 +769,7 @@ async def cb_rate(cq: CallbackQuery, session: AsyncSession, state: FSMContext):
     await state.set_state(FeedbackFSM.comment)
     await cq.message.edit_text(
         f"Thanks! {stars}★ logged.\n\nWant to add a comment? Send it now, or /skip.",
-        reply_markup=back_home()
+        reply_markup=back_home(),
     )
     await cq.answer()
 
@@ -751,18 +806,14 @@ async def free_text(m: Message, session: AsyncSession):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 7. ADMIN HANDLERS
+# 8. ADMIN HANDLERS
 # ═══════════════════════════════════════════════════════════════════════
 admin_router = Router(name="admin")
 
 
-def admin_gate(uid: int) -> bool:
-    return is_admin(uid)
-
-
 @admin_router.message(Command("admin"))
 async def admin_panel(m: Message, session: AsyncSession):
-    if not admin_gate(m.from_user.id):
+    if not is_admin(m.from_user.id):
         return
     total = await count_users(session)
     open_t = await count_tickets_open(session)
@@ -777,13 +828,13 @@ async def admin_panel(m: Message, session: AsyncSession):
         f"/faq_list\n"
         f"/tickets — recent tickets\n"
         f"/broadcast <message>",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
 
 @admin_router.message(Command("stats"))
 async def admin_stats(m: Message, session: AsyncSession):
-    if not admin_gate(m.from_user.id):
+    if not is_admin(m.from_user.id):
         return
     users = await count_users(session)
     open_t = await count_tickets_open(session)
@@ -792,7 +843,7 @@ async def admin_stats(m: Message, session: AsyncSession):
 
 @admin_router.message(Command("faq_add"))
 async def admin_faq_add(m: Message, session: AsyncSession):
-    if not admin_gate(m.from_user.id):
+    if not is_admin(m.from_user.id):
         return
     parts = (m.text or "").split("|", 2)
     if len(parts) < 2:
@@ -806,7 +857,7 @@ async def admin_faq_add(m: Message, session: AsyncSession):
 
 @admin_router.message(Command("faq_del"))
 async def admin_faq_del(m: Message, session: AsyncSession):
-    if not admin_gate(m.from_user.id):
+    if not is_admin(m.from_user.id):
         return
     try:
         fid = int((m.text or "").split()[1])
@@ -823,7 +874,7 @@ async def admin_faq_del(m: Message, session: AsyncSession):
 
 @admin_router.message(Command("faq_list"))
 async def admin_faq_list(m: Message, session: AsyncSession):
-    if not admin_gate(m.from_user.id):
+    if not is_admin(m.from_user.id):
         return
     faqs = await get_active_faqs(session)
     if not faqs:
@@ -835,7 +886,7 @@ async def admin_faq_list(m: Message, session: AsyncSession):
 
 @admin_router.message(Command("tickets"))
 async def admin_tickets(m: Message, session: AsyncSession):
-    if not admin_gate(m.from_user.id):
+    if not is_admin(m.from_user.id):
         return
     rows = list((await session.execute(
         select(Ticket).order_by(Ticket.created_at.desc()).limit(10)
@@ -847,13 +898,14 @@ async def admin_tickets(m: Message, session: AsyncSession):
         await m.answer(
             f"🎫 `{t.ticket_number}` — {t.status.value}\n"
             f"From: {t.user_id}\nSubject: {t.subject}",
-            parse_mode="Markdown", reply_markup=ticket_admin_kb(t.id)
+            parse_mode="Markdown",
+            reply_markup=ticket_admin_kb(t.id),
         )
 
 
 @admin_router.message(Command("broadcast"))
 async def admin_broadcast(m: Message, session: AsyncSession):
-    if not admin_gate(m.from_user.id):
+    if not is_admin(m.from_user.id):
         return
     text = (m.text or "").split(" ", 1)
     if len(text) < 2:
@@ -877,7 +929,7 @@ async def admin_broadcast(m: Message, session: AsyncSession):
 
 @admin_router.callback_query(F.data.startswith("tadm:"))
 async def admin_ticket_action(cq: CallbackQuery, session: AsyncSession):
-    if not admin_gate(cq.from_user.id):
+    if not is_admin(cq.from_user.id):
         await cq.answer("⛔", show_alert=True)
         return
     _, status, tid = cq.data.split(":")
@@ -893,20 +945,20 @@ async def admin_ticket_action(cq: CallbackQuery, session: AsyncSession):
     try:
         await cq.bot.send_message(
             ticket.user_id,
-            f"📬 Your ticket *{ticket.ticket_number}* is now *{status.replace('_',' ')}*.",
-            parse_mode="Markdown"
+            f"📬 Your ticket *{ticket.ticket_number}* is now *{status.replace('_', ' ')}*.",
+            parse_mode="Markdown",
         )
     except Exception:
         pass
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 8. WEB DASHBOARD (optional FastAPI)
+# 9. WEB DASHBOARD (optional)
 # ═══════════════════════════════════════════════════════════════════════
 def build_web_app():
     if not settings.web_dashboard_enabled:
         return None
-    from fastapi import FastAPI, Depends, HTTPException, Header
+    from fastapi import FastAPI, Depends, Header, HTTPException
 
     app = FastAPI(title="Support Bot Dashboard")
 
@@ -921,9 +973,7 @@ def build_web_app():
     @app.get("/api/stats", dependencies=[Depends(check_auth)])
     async def stats():
         async with SessionLocal() as s:
-            users = await count_users(s)
-            open_t = await count_tickets_open(s)
-        return {"users": users, "open_tickets": open_t}
+            return {"users": await count_users(s), "open_tickets": await count_tickets_open(s)}
 
     @app.get("/api/tickets", dependencies=[Depends(check_auth)])
     async def list_tickets():
@@ -938,32 +988,24 @@ def build_web_app():
             for t in rows
         ]
 
-    @app.get("/api/faqs", dependencies=[Depends(check_auth)])
-    async def list_faqs():
-        async with SessionLocal() as s:
-            faqs = await get_active_faqs(s)
-        return [
-            {"id": f.id, "category": f.category, "question": f.question, "answer": f.answer}
-            for f in faqs
-        ]
-
     return app
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 9. BOOTSTRAP
+# 10. BOOTSTRAP
 # ═══════════════════════════════════════════════════════════════════════
 async def run_web(app):
     import uvicorn
-    cfg = uvicorn.Config(app, host=settings.web_dashboard_host,
-                         port=settings.web_dashboard_port, log_level="info")
-    server = uvicorn.Server(cfg)
-    await server.serve()
+    cfg = uvicorn.Config(
+        app, host=settings.web_dashboard_host,
+        port=settings.web_dashboard_port, log_level="info",
+    )
+    await uvicorn.Server(cfg).serve()
 
 
 async def main():
     await init_db()
-    log.info("Database ready.")
+    log.info("Starting bot…")
 
     bot = Bot(token=settings.bot_token)
     dp = Dispatcher(storage=MemoryStorage())
@@ -978,9 +1020,9 @@ async def main():
     web_app = build_web_app()
     if web_app:
         asyncio.create_task(run_web(web_app))
-        log.info("Web dashboard on %s:%s", settings.web_dashboard_host, settings.web_dashboard_port)
+        log.info("Web dashboard on %s:%s",
+                 settings.web_dashboard_host, settings.web_dashboard_port)
 
-    log.info("Bot starting (polling)…")
     await dp.start_polling(bot)
 
 
